@@ -4,7 +4,7 @@
 
 ## 打开项目
 
-用支持 AGP 9.2 的 Android Studio 打开项目根目录。项目使用内置 Gradle Wrapper（9.4.1）、Android SDK Platform 37 和 Android Studio 自带的 JDK（17 或更高）。运行环境为 Android 14 及以上，主要验证目标是小米 15、HyperOS 4、Android 17。
+用支持 AGP 9.2 的 Android Studio 打开项目根目录。项目使用内置 Gradle Wrapper（9.4.1）、Android SDK Platform 37（compileSdk / targetSdk 均为 37） 和 Android Studio 自带的 JDK（17 或更高）。运行环境为 Android 14 及以上，主要验证目标是小米 15、HyperOS 4、Android 17。
 
 ## 使用流程
 
@@ -32,3 +32,7 @@ xiaomiDebug=true
 - [小米超级岛接入流程](https://dev.mi.com/xiaomihyperos/documentation/detail?pId=2132)
 - [小米超级岛开发指南](https://dev.mi.com/xiaomihyperos/documentation/detail?pId=2131)
 - [Android 17 SDK 配置](https://developer.android.com/about/versions/17/setup-sdk)
+
+## 当前验证状态
+
+本轮按要求完成源码，尚未编译、安装或真机调试。尚未用小米 15 的真实付款截图验证 OCR 页面适配、后台服务存活及 HyperOS 4 超级岛展示。支付页面更新可能需要调整识别规则。下一轮需用脱敏的微信支付、支付宝付款成功页和普通截图验证。

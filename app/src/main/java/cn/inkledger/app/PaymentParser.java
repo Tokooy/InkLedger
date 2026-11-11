@@ -69,7 +69,7 @@ final class PaymentParser {
         if (amount <= 0) return null;
 
         if (!hasText(merchant) && receipt) {
-            for (int i = Math.max(0, heading - 1); i < Math.min(rows.size(), heading + 5); i++) {
+            for (int i = heading + 1; i < Math.min(rows.size(), heading + 5); i++) {
                 String candidate = rows.get(i);
                 Matcher payee = PAYEE.matcher(candidate);
                 if (payee.matches()) candidate = payee.group(1);
