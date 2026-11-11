@@ -25,6 +25,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.window.BackEvent;
+import android.window.OnBackAnimationCallback;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
@@ -55,7 +57,7 @@ public final class MainActivity extends Activity {
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm", Locale.CHINA);
 
     private enum Page {
-        CATEGORY("分类"), DAYS("每日"), DETAILS("明细"), SETTINGS("设置");
+        CATEGORY("分类"), DAYS("每日"), DETAILS("明细");
         final String label;
         Page(String label) { this.label = label; }
     }
@@ -75,8 +77,39 @@ public final class MainActivity extends Activity {
     private LinearLayout content;
     private LinearLayout nav;
     private ScrollView scroll;
+    private LedgerPager pager;
+    private final java.util.EnumMap<Page, Integer> positions = new java.util.EnumMap<>(Page.class);
+    private boolean refreshPending;
+    private Expense.Category pendingFilter;
+    private boolean fullScreenOverlay;
+    private boolean closingOverlay;
     private FrameLayout overlay;
-    private final OnBackInvokedCallback dismiss = this::closeSheet;
+    private final OnBackAnimationCallback dismiss = new OnBackAnimationCallback() {
+        @Override public void onBackStarted(BackEvent event) {
+            if (fullScreenOverlay && !closingOverlay && overlay != null) {
+                overlay.animate().cancel();
+                root.animate().cancel();
+            }
+        }
+
+        @Override public void onBackProgressed(BackEvent event) {
+            if (!fullScreenOverlay || closingOverlay || overlay == null) return;
+            float width = frame.getWidth();
+            overlay.setTranslationX(width * event.getProgress());
+            root.setTranslationX(-width * .16f * (1 - event.getProgress()));
+        }
+
+        @Override public void onBackCancelled() {
+            if (!fullScreenOverlay || closingOverlay || overlay == null) return;
+            overlay.animate().translationX(0).setDuration(200).setInterpolator(slideCurve()).start();
+            root.animate().translationX(-frame.getWidth() * .16f).setDuration(200)
+                    .setInterpolator(slideCurve()).start();
+        }
+
+        @Override public void onBackInvoked() { closeSheet(); }
+    };
+    private final OnBackInvokedCallback returnToCategories = () -> switchPage(Page.CATEGORY);
+    private boolean drillBackRegistered;
 
     private final BroadcastReceiver changed = new BroadcastReceiver() {
         @Override
@@ -91,7 +124,8 @@ public final class MainActivity extends Activity {
         super.onCreate(saved);
         if (saved != null) {
             month = YearMonth.parse(saved.getString("month"));
-            page = Page.valueOf(saved.getString("page"));
+            String previousPage = saved.getString("page");
+            if (previousPage != null && !previousPage.equals("SETTINGS")) page = Page.valueOf(previousPage);
             day = saved.getInt("day");
             String category = saved.getString("filter");
             if (category != null) filter = Expense.Category.valueOf(category);
@@ -103,19 +137,38 @@ public final class MainActivity extends Activity {
         frame.addView(root, new FrameLayout.LayoutParams(MATCH, MATCH));
         frame.setOnApplyWindowInsetsListener((view, insets) -> {
             var bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-            frame.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            int bottom = Math.max(bars.bottom, insets.getInsets(WindowInsets.Type.ime()).bottom);
+            frame.setPadding(bars.left, bars.top, bars.right, bottom);
             return insets;
         });
 
 
-        scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setClipToPadding(false);
-        scroll.setVerticalScrollBarEnabled(false);
-        content = column();
-        content.setPadding(dp(20), dp(14), dp(20), dp(18));
-        scroll.addView(content, new ScrollView.LayoutParams(MATCH, WRAP));
-        root.addView(scroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        pager = new LedgerPager(this, Page.values().length, new LedgerPager.Pages() {
+            @Override public View create(int position) {
+                positions.put(page, scroll.getScrollY());
+                return buildPage(Page.values()[position], pendingFilter);
+            }
+
+            @Override public void settled(int position, View view) {
+                Page next = Page.values()[position];
+                if (next != page) {
+                    page = next;
+                    filter = pendingFilter;
+                }
+                pendingFilter = null;
+                scroll = (ScrollView) view;
+                content = (LinearLayout) scroll.getChildAt(0);
+                renderNav();
+                if (refreshPending) {
+                    refreshPending = false;
+                    render(false);
+                }
+            }
+        });
+        scroll = buildPage(page, filter);
+        content = (LinearLayout) scroll.getChildAt(0);
+        pager.initialize(page.ordinal(), scroll);
+        root.addView(pager, new LinearLayout.LayoutParams(MATCH, 0, 1));
 
         nav = row();
         nav.setPadding(dp(5), dp(5), dp(5), dp(5));
@@ -163,7 +216,8 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        closeSheet();
+        removeOverlay();
+        if (drillBackRegistered) getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(returnToCategories);
         unregisterReceiver(changed);
         io.shutdown();
         super.onDestroy();
@@ -193,31 +247,59 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private ScrollView buildPage(Page target, Expense.Category targetFilter) {
+        ScrollView view = new ScrollView(this);
+        view.setFillViewport(true);
+        view.setVerticalScrollBarEnabled(false);
+        LinearLayout pageContent = column();
+        pageContent.setPadding(dp(20), dp(14), dp(20), dp(18));
+        view.addView(pageContent, new ScrollView.LayoutParams(MATCH, WRAP));
+        Page originalPage = page;
+        Expense.Category originalFilter = filter;
+        LinearLayout originalContent = content;
+        page = target;
+        filter = targetFilter;
+        content = pageContent;
+        try {
+            renderPage();
+        } finally {
+            page = originalPage;
+            filter = originalFilter;
+            content = originalContent;
+        }
+        int position = targetFilter == null ? positions.getOrDefault(target, 0) : 0;
+        view.post(() -> view.scrollTo(0, position));
+        return view;
+    }
+
     private void render(boolean resetScroll) {
+        if (pager.moving()) {
+            refreshPending = true;
+            return;
+        }
         int scrollY = resetScroll ? 0 : scroll.getScrollY();
         content.removeAllViews();
-        renderHeader();
-        if (page != Page.SETTINGS) renderMonthSelector();
+        renderPage();
+        renderNav();
+        ScrollView current = scroll;
+        current.post(() -> current.scrollTo(0, scrollY));
+    }
 
-        if (page == Page.SETTINGS) {
-            renderSettings();
-        } else if (loading) {
+    private void renderPage() {
+        renderHeader();
+        renderMonthSelector();
+        if (loading) {
             LinearLayout wait = card();
             wait.addView(label("正在读取账本", 15, MUTED, false));
             addCard(wait);
-        } else {
-            Report report = new Report(month, expenses);
-            if (page == Page.CATEGORY) {
-                renderHero(report);
-                renderCategories(report);
-            } else if (page == Page.DAYS) {
-                renderDays(report);
-            } else {
-                renderDetails(report);
-            }
+            return;
         }
-        renderNav();
-        scroll.post(() -> scroll.scrollTo(0, scrollY));
+        Report report = new Report(month, expenses);
+        switch (page) {
+            case CATEGORY -> { renderHero(report); renderCategories(report); }
+            case DAYS -> renderDays(report);
+            case DETAILS -> renderDetails(report);
+        }
     }
 
     private void renderHeader() {
@@ -252,6 +334,7 @@ public final class MainActivity extends Activity {
         YearMonth next = month.plusMonths(direction);
         if (next.isAfter(YearMonth.now())) return;
         month = next;
+        positions.clear();
         day = next.equals(YearMonth.now()) ? LocalDate.now().getDayOfMonth() : 1;
         filter = null;
         loading = true;
@@ -296,7 +379,10 @@ public final class MainActivity extends Activity {
 
     private void renderCategories(Report report) {
         LinearLayout box = card();
-        box.addView(label("消费分类", 20, INK, true));
+        LinearLayout heading = row();
+        heading.addView(label("消费分类", 20, INK, true), new LinearLayout.LayoutParams(0, WRAP, 1));
+        heading.addView(button("＋ 分类", BLUE, TINT, this::addCategoryPage));
+        box.addView(heading);
         box.addView(new Charts.Ring(this, report.categories, report.total), new LinearLayout.LayoutParams(MATCH, dp(205)));
         if (report.categories.isEmpty()) {
             box.addView(label("本月暂无记录。截一张付款成功页，识别结果会出现在这里。", 14, MUTED, false));
@@ -314,7 +400,7 @@ public final class MainActivity extends Activity {
                 String percent = String.format(Locale.CHINA, "%.0f%%", cents * 100.0 / report.total);
                 line.addView(label(Expense.money(cents) + "  ·  " + percent, 13, MUTED, true));
                 makeClickable(line, WHITE, 15, () -> {
-                    filter = category;
+                    pendingFilter = category;
                     switchPage(Page.DETAILS);
                 });
                 box.addView(line);
@@ -451,13 +537,24 @@ public final class MainActivity extends Activity {
     }
 
     private void renderNav() {
+        boolean drill = page == Page.DETAILS && filter != null;
+        if (drill != drillBackRegistered) {
+            if (drill) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT, returnToCategories);
+            else getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(returnToCategories);
+            drillBackRegistered = drill;
+        }
         nav.removeAllViews();
         for (Page tab : Page.values()) {
             boolean selected = page == tab;
             TextView item = button(tab.label, selected ? BLUE : MUTED, selected ? TINT : 0xfffafbff, () -> {
                 if (page == tab && filter == null) return;
-                filter = null;
-                switchPage(tab);
+                if (page == tab) {
+                    filter = null;
+                    render(true);
+                } else {
+                    switchPage(tab);
+                }
             });
             item.setPadding(dp(4), dp(4), dp(4), dp(4));
             item.setSelected(selected);
@@ -555,44 +652,24 @@ public final class MainActivity extends Activity {
     }
 
     private void switchPage(Page next) {
-        int direction = next.ordinal() >= page.ordinal() ? 1 : -1;
-        page = next;
-        render(true);
-        animateIn(content, dp(22) * direction, 0);
+        if (!pager.moving()) pager.goTo(next.ordinal());
     }
 
-    private void animateIn(View view, float x, float y) {
-        view.animate().cancel();
-        view.setTranslationX(x);
-        view.setTranslationY(y);
-        view.setAlpha(.45f);
-        view.animate().translationX(0).translationY(0).alpha(1f)
-                .setDuration(290).setInterpolator(new android.view.animation.PathInterpolator(.2f, .85f, .2f, 1f)).start();
+    private android.view.animation.Interpolator slideCurve() {
+        return new android.view.animation.PathInterpolator(.2f, .78f, .2f, 1f);
     }
 
     private java.util.List<Expense.Category> categories() {
         var options = new java.util.ArrayList<>(java.util.Arrays.asList(Expense.Category.values()));
         getSharedPreferences("categories", MODE_PRIVATE)
                 .getStringSet("names", java.util.Set.of()).stream().sorted()
-                .map(Expense.Category::custom).forEach(options::add);
+                .map(Expense.Category::custom).map(category -> CategoryStyles.resolve(this, category))
+                .forEach(options::add);
         return options;
     }
 
-    private void renderSettings() {
-        LinearLayout categoryCard = card();
-        categoryCard.addView(label("消费分类", 21, INK, true));
-        addSheetText(categoryCard, "新增分类后，可以在消费详情中为交易选择它。");
-        for (Expense.Category category : categories()) {
-            TextView item = label(category.label, 16, INK, false);
-            item.setPadding(0, dp(10), 0, dp(3));
-            categoryCard.addView(item);
-        }
-        addSheetButton(categoryCard, "添加分类", WHITE, BLUE, this::addCategoryPage);
-        addCard(categoryCard);
-    }
-
-    private LinearLayout fullPage(String title, boolean animate) {
-        closeSheet();
+    private LinearLayout fullPage(String title) {
+        removeOverlay();
         overlay = new FrameLayout(this);
         overlay.setBackgroundColor(BG);
         overlay.setClickable(true);
@@ -612,24 +689,105 @@ public final class MainActivity extends Activity {
         frame.addView(overlay, new FrameLayout.LayoutParams(MATCH, MATCH));
         overlay.setAccessibilityPaneTitle(title);
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, dismiss);
-        if (animate) animateIn(body, dp(30), 0);
+        fullScreenOverlay = true;
+        int width = frame.getWidth();
+        overlay.setTranslationX(width);
+        overlay.animate().translationX(0).setDuration(300).setInterpolator(slideCurve()).start();
+        root.animate().translationX(-width * .16f).setDuration(300).setInterpolator(slideCurve()).start();
         return panel;
     }
 
     private void addCategoryPage() {
-        LinearLayout panel = fullPage("添加分类", true);
+        LinearLayout panel = fullPage("新建消费分类");
+        LinearLayout preview = row();
+        preview.setPadding(dp(18), dp(20), dp(18), dp(20));
+        marginTop(preview, 16);
+        panel.addView(preview);
+        TextView previewIcon = label(CategoryStyles.SYMBOLS[0], 32, WHITE, true);
+        previewIcon.setGravity(Gravity.CENTER);
+        previewIcon.setBackground(shape(0x30ffffff, 19));
+        preview.addView(previewIcon, new LinearLayout.LayoutParams(dp(62), dp(62)));
+        LinearLayout previewText = column();
+        previewText.setPadding(dp(15), 0, 0, 0);
+        TextView previewName = label("新分类", 23, WHITE, true);
+        previewText.addView(previewName);
+        previewText.addView(label("账本预览", 13, 0xfff0f1ff, false));
+        preview.addView(previewText, new LinearLayout.LayoutParams(0, WRAP, 1));
+
         LinearLayout form = card();
-        marginTop(form, 18);
+        marginTop(form, 14);
         panel.addView(form);
+        form.addView(label("名称", 16, INK, true));
         android.widget.EditText input = new android.widget.EditText(this);
         input.setSingleLine(true);
-        input.setHint("分类名称");
+        input.setHint("例如旅行、宠物");
         input.setTextColor(INK);
         input.setBackground(shape(BG, 15));
         input.setPadding(dp(14), dp(14), dp(14), dp(14));
         input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(16)});
-        form.addView(input, new LinearLayout.LayoutParams(MATCH, WRAP));
-        addSheetButton(form, "保存分类", WHITE, BLUE, () -> {
+        marginTop(input, 8);
+        form.addView(input);
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
+                String name = text.toString().strip();
+                previewName.setText(name.isEmpty() ? "新分类" : name);
+            }
+            @Override public void afterTextChanged(android.text.Editable text) {}
+        });
+
+        int[] selection = {0, 0};
+        LinearLayout palette = row();
+        LinearLayout icons = row();
+        Runnable update = () -> {
+            int color = CategoryStyles.COLORS[selection[0]];
+            GradientDrawable gradient = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{color, Color.rgb((Color.red(color) * 2 + 25) / 3,
+                            (Color.green(color) * 2 + 33) / 3, (Color.blue(color) * 2 + 68) / 3)});
+            gradient.setCornerRadius(dp(24));
+            preview.setBackground(gradient);
+            previewIcon.setText(CategoryStyles.SYMBOLS[selection[1]]);
+            for (int i = 0; i < CategoryStyles.COLORS.length; i++) {
+                TextView swatch = (TextView) palette.getChildAt(i);
+                swatch.setText(i == selection[0] ? "✓" : "●");
+                swatch.setTextColor(CategoryStyles.COLORS[i]);
+                swatch.setBackground(shape(i == selection[0] ? TINT : BG, 14));
+                swatch.setSelected(i == selection[0]);
+            }
+            for (int i = 0; i < CategoryStyles.SYMBOLS.length; i++) {
+                TextView symbol = (TextView) icons.getChildAt(i);
+                symbol.setTextColor(i == selection[1] ? color : MUTED);
+                symbol.setBackground(shape(i == selection[1] ? TINT : BG, 14));
+                symbol.setSelected(i == selection[1]);
+            }
+        };
+        for (int i = 0; i < CategoryStyles.COLORS.length; i++) {
+            int index = i;
+            addStyleChoice(palette, "●", CategoryStyles.COLOR_NAMES[i], () -> {
+                selection[0] = index;
+                update.run();
+            });
+        }
+        for (int i = 0; i < CategoryStyles.SYMBOLS.length; i++) {
+            int index = i;
+            addStyleChoice(icons, CategoryStyles.SYMBOLS[i], "图标 " + CategoryStyles.SYMBOLS[i], () -> {
+                selection[1] = index;
+                update.run();
+            });
+        }
+        TextView colorLabel = label("颜色", 16, INK, true);
+        marginTop(colorLabel, 17);
+        form.addView(colorLabel);
+        marginTop(palette, 8);
+        form.addView(palette);
+        TextView iconLabel = label("图标", 16, INK, true);
+        marginTop(iconLabel, 17);
+        form.addView(iconLabel);
+        marginTop(icons, 8);
+        form.addView(icons);
+        update.run();
+
+        addSheetButton(panel, "创建分类", WHITE, BLUE, () -> {
             String name = input.getText().toString().strip();
             if (name.isEmpty() || categories().stream().anyMatch(category -> category.label.equalsIgnoreCase(name))) {
                 input.setError(name.isEmpty() ? "请输入分类名称" : "已有同名分类");
@@ -638,7 +796,8 @@ public final class MainActivity extends Activity {
             var preferences = getSharedPreferences("categories", MODE_PRIVATE);
             var names = new java.util.HashSet<>(preferences.getStringSet("names", java.util.Set.of()));
             names.add(name);
-            preferences.edit().putStringSet("names", names).apply();
+            preferences.edit().putStringSet("names", names)
+                    .putInt("style:" + name, selection[0] * CategoryStyles.SYMBOLS.length + selection[1]).apply();
             getSystemService(android.view.inputmethod.InputMethodManager.class)
                     .hideSoftInputFromWindow(input.getWindowToken(), 0);
             closeSheet();
@@ -646,8 +805,18 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void addStyleChoice(LinearLayout row, String glyph, String description, Runnable choose) {
+        TextView option = label(glyph, 22, INK, true);
+        option.setGravity(Gravity.CENTER);
+        option.setContentDescription(description);
+        makeClickable(option, BG, 14, choose);
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, dp(44), 1);
+        size.setMargins(dp(2), 0, dp(2), 0);
+        row.addView(option, size);
+    }
+
     private void expenseSheet(Expense expense) {
-        LinearLayout panel = fullPage("消费详情", true);
+        LinearLayout panel = fullPage("消费详情");
         LinearLayout summary = card();
         marginTop(summary, 18);
         summary.addView(label(Expense.money(expense.cents()), 36, INK, true));
@@ -659,21 +828,37 @@ public final class MainActivity extends Activity {
         choices.addView(label("修改分类", 20, INK, true));
         for (Expense.Category option : categories()) {
             boolean selected = option.equals(expense.category());
-            addSheetButton(choices, selected ? option.label + "  ✓" : option.label,
-                    selected ? BLUE : INK, selected ? TINT : BG, () -> {
-                        closeSheet();
-                        mutate(() -> Ledger.get(this).recategorize(expense.id(), option));
-                    });
+            LinearLayout optionRow = row();
+            optionRow.setPadding(dp(10), dp(7), dp(12), dp(7));
+            optionRow.addView(badge(option));
+            TextView name = label(option.label, 16, selected ? BLUE : INK, true);
+            name.setPadding(dp(10), 0, 0, 0);
+            optionRow.addView(name, new LinearLayout.LayoutParams(0, WRAP, 1));
+            if (selected) optionRow.addView(label("✓", 19, BLUE, true));
+            makeClickable(optionRow, selected ? TINT : BG, 16, () -> {
+                closeSheet();
+                mutate(() -> Ledger.get(this).recategorize(expense.id(), option));
+            });
+            marginTop(optionRow, 7);
+            choices.addView(optionRow);
         }
         panel.addView(choices);
-        addSheetButton(panel, "删除这笔记录", 0xffa63243, 0xffffedf0, () -> {
-            LinearLayout confirm = fullPage("删除这笔记录？", false);
-            addSheetText(confirm, expense.merchant() + " · " + Expense.money(expense.cents()));
-            addSheetButton(confirm, "删除", WHITE, 0xffa63243, () -> {
+        LinearLayout deletion = card();
+        marginTop(deletion, 12);
+        panel.addView(deletion);
+        renderDeleteControl(deletion, expense);
+    }
+
+    private void renderDeleteControl(LinearLayout deletion, Expense expense) {
+        deletion.removeAllViews();
+        addSheetButton(deletion, "删除这笔记录", 0xffa63243, 0xffffedf0, () -> {
+            deletion.removeAllViews();
+            deletion.addView(label("删除这笔记录？", 17, INK, true));
+            addSheetButton(deletion, "确认删除", WHITE, 0xffa63243, () -> {
                 closeSheet();
                 mutate(() -> Ledger.get(this).delete(expense.id()));
             });
-            addSheetButton(confirm, "取消", MUTED, BG, () -> expenseSheet(expense));
+            addSheetButton(deletion, "取消", MUTED, BG, () -> renderDeleteControl(deletion, expense));
         });
     }
 
@@ -693,7 +878,7 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout sheet(String title) {
-        closeSheet();
+        removeOverlay();
         overlay = new FrameLayout(this);
         overlay.setBackgroundColor(0x66161d36);
         overlay.setOnClickListener(view -> closeSheet());
@@ -731,11 +916,28 @@ public final class MainActivity extends Activity {
     }
 
     private void closeSheet() {
+        if (overlay == null || closingOverlay) return;
+        if (!fullScreenOverlay || isDestroyed() || isFinishing()) {
+            removeOverlay();
+            return;
+        }
+        closingOverlay = true;
+        overlay.animate().translationX(frame.getWidth()).setDuration(260)
+                .setInterpolator(slideCurve()).withEndAction(this::removeOverlay).start();
+        root.animate().translationX(0).setDuration(260).setInterpolator(slideCurve()).start();
+    }
+
+    private void removeOverlay() {
         if (overlay == null) return;
         getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(dismiss);
+        overlay.animate().cancel();
         frame.removeView(overlay);
+        root.animate().cancel();
+        root.setTranslationX(0);
         root.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
         overlay = null;
+        fullScreenOverlay = false;
+        closingOverlay = false;
     }
 
     private void addSheetText(LinearLayout panel, String text) {

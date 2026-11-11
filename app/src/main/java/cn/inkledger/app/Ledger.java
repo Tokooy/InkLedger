@@ -13,6 +13,7 @@ import java.util.List;
 
 final class Ledger extends SQLiteOpenHelper {
     private static Ledger instance;
+    private final Context context;
 
     static synchronized Ledger get(Context context) {
         if (instance == null) instance = new Ledger(context.getApplicationContext());
@@ -21,6 +22,7 @@ final class Ledger extends SQLiteOpenHelper {
 
     private Ledger(Context context) {
         super(context, "ink-ledger.db", null, 1);
+        this.context = context;
         setWriteAheadLoggingEnabled(true);
     }
 
@@ -92,12 +94,7 @@ final class Ledger extends SQLiteOpenHelper {
                 "paid_at >= ? AND paid_at < ?",
                 new String[]{Long.toString(start), Long.toString(end)}, null, null, "paid_at DESC, _id DESC")) {
             while (cursor.moveToNext()) {
-                Expense.Category category;
-                try {
-                    category = Expense.Category.valueOf(cursor.getString(3));
-                } catch (IllegalArgumentException ignored) {
-                    category = Expense.Category.UNKNOWN;
-                }
+                Expense.Category category = CategoryStyles.resolve(context, Expense.Category.valueOf(cursor.getString(3)));
                 expenses.add(new Expense(cursor.getLong(0), cursor.getLong(1), cursor.getString(2),
                         category, cursor.getString(4), cursor.getLong(5)));
             }

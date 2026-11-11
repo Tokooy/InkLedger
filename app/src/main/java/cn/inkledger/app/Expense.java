@@ -69,6 +69,10 @@ final class Expense {
 
         String name() { return key; }
 
+        Category styled(int color, String mark) {
+            return new Category(key, label, color, mark);
+        }
+
         static Category[] values() { return BUILT_INS.clone(); }
 
         static Category valueOf(String key) {
