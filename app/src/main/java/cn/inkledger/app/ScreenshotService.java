@@ -116,6 +116,7 @@ public final class ScreenshotService extends Service {
                 for (String name : MediaStore.getExternalVolumeNames(ScreenshotService.this)) {
                     if (stopping) return;
                     String version = MediaStore.getVersion(ScreenshotService.this, name);
+                    if (version == null) continue;
                     long generation = MediaStore.getGeneration(ScreenshotService.this, name);
                     Volume previous = volumes.get(name);
                     if (previous == null || !version.equals(previous.version()) || generation < previous.scanned()) {

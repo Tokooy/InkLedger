@@ -435,7 +435,7 @@ public final class MainActivity extends Activity {
     }
 
     private TextView badge(Expense.Category category) {
-        TextView view = label(category.mark, 14, category.color, true);
+        TextView view = label(category.mark, 14, INK, true);
         view.setGravity(Gravity.CENTER);
         view.setBackground(shape((category.color & 0x00ffffff) | 0x20000000, 13));
         view.setLayoutParams(new LinearLayout.LayoutParams(dp(38), dp(38)));

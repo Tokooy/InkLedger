@@ -9,8 +9,9 @@
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
 
     <application android:allowBackup="false" android:icon="@drawable/ic_launcher"
-        android:label="墨账" android:theme="@style/AppTheme" android:supportsRtl="true">
-        <meta-data android:name="com.xiaomi.xms.APP_ID" android:resource="@string/xiaomi_app_id" />
+        android:label="墨账" android:theme="@style/AppTheme"
+        android:enableOnBackInvokedCallback="true" android:supportsRtl="true">
+        <meta-data android:name="com.xiaomi.xms.APP_ID" android:value="@string/xiaomi_app_id" />
         <meta-data android:name="com.xiaomi.xms.BUILD_TYPE_DEBUG" android:value="${xiaomiDebug}" />
 
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
