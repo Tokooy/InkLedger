@@ -30,8 +30,30 @@ final class PaymentParser {
     private static final Pattern PAYEE = Pattern.compile("^向\\s*(.{2,60}?)\\s*付款$");
     private static final Pattern RECEIPT_ACTION = Pattern.compile("^(?:完成|返回商家|返回商户|查看账单|查看账单详情|查看支付详情|查看交易详情)$");
 
-    record Result(long cents, String merchant, Expense.Category category, String source,
-                  long paidAt, String order) {}
+    static final class Result {
+        private final long cents;
+        private final String merchant;
+        private final Expense.Category category;
+        private final String source;
+        private final long paidAt;
+        private final String order;
+
+        Result(long cents, String merchant, Expense.Category category, String source, long paidAt, String order) {
+            this.cents = cents;
+            this.merchant = merchant;
+            this.category = category;
+            this.source = source;
+            this.paidAt = paidAt;
+            this.order = order;
+        }
+
+        long cents() { return cents; }
+        String merchant() { return merchant; }
+        Expense.Category category() { return category; }
+        String source() { return source; }
+        long paidAt() { return paidAt; }
+        String order() { return order; }
+    }
 
     private PaymentParser() {}
 

@@ -6,7 +6,29 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.Locale;
 
-record Expense(long id, long cents, String merchant, Category category, String source, long paidAt) {
+final class Expense {
+    private final long id;
+    private final long cents;
+    private final String merchant;
+    private final Category category;
+    private final String source;
+    private final long paidAt;
+
+    Expense(long id, long cents, String merchant, Category category, String source, long paidAt) {
+        this.id = id;
+        this.cents = cents;
+        this.merchant = merchant;
+        this.category = category;
+        this.source = source;
+        this.paidAt = paidAt;
+    }
+
+    long id() { return id; }
+    long cents() { return cents; }
+    String merchant() { return merchant; }
+    Category category() { return category; }
+    String source() { return source; }
+    long paidAt() { return paidAt; }
     LocalDate date() {
         return Instant.ofEpochMilli(paidAt).atZone(ZoneId.systemDefault()).toLocalDate();
     }

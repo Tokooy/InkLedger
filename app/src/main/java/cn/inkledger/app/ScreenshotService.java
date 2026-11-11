@@ -54,8 +54,33 @@ public final class ScreenshotService extends Service {
     private Uri tree;
     private Uri children;
 
-    private record Screenshot(Uri uri, String imageKey, long takenAt) {}
-    private record Line(Rect bounds, String text) {}
+    private static final class Screenshot {
+        private final Uri uri;
+        private final String imageKey;
+        private final long takenAt;
+
+        Screenshot(Uri uri, String imageKey, long takenAt) {
+            this.uri = uri;
+            this.imageKey = imageKey;
+            this.takenAt = takenAt;
+        }
+
+        Uri uri() { return uri; }
+        String imageKey() { return imageKey; }
+        long takenAt() { return takenAt; }
+    }
+    private static final class Line {
+        private final Rect bounds;
+        private final String text;
+
+        Line(Rect bounds, String text) {
+            this.bounds = bounds;
+            this.text = text;
+        }
+
+        Rect bounds() { return bounds; }
+        String text() { return text; }
+    }
 
     static boolean isActive() {
         return active;
