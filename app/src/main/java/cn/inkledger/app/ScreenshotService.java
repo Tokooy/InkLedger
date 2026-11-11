@@ -53,6 +53,7 @@ public final class ScreenshotService extends Service {
     private TextRecognizer recognizer;
     private Uri tree;
     private Uri children;
+    private long scanSince;
 
     private static final class Screenshot {
         private final Uri uri;
@@ -89,13 +90,14 @@ public final class ScreenshotService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && STOP.equals(intent.getAction())) {
+            ScreenshotFolder.setResumeEnabled(this, false);
             stopping = true;
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (worker != null) return START_NOT_STICKY;
+        if (worker != null) return START_STICKY;
         tree = ScreenshotFolder.selected(this);
-        if (tree == null) {
+        if (tree == null || !ScreenshotFolder.resumeEnabled(this)) {
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -108,6 +110,7 @@ public final class ScreenshotService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        scanSince = ScreenshotFolder.scanSince(this, tree);
         workerThread = new HandlerThread("screenshot-ocr");
         workerThread.start();
         worker = new Handler(workerThread.getLooper());
@@ -126,7 +129,7 @@ public final class ScreenshotService extends Service {
             observer = null;
         }
         worker.post(scan);
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     private final Runnable scan = new Runnable() {
@@ -167,9 +170,10 @@ public final class ScreenshotService extends Service {
                 if (type == null || !type.startsWith("image/")) continue;
                 String id = rows.getString(0);
                 present.add(id);
-                if (!active || handled.contains(id) || (!rows.isNull(3) && rows.getLong(3) == 0)) continue;
+                if (handled.contains(id) || (!rows.isNull(3) && rows.getLong(3) == 0)) continue;
                 long modified = rows.getLong(2);
-                long takenAt = modified > 0 ? modified : System.currentTimeMillis();
+                if (modified < scanSince) continue;
+                long takenAt = modified;
                 Uri uri = DocumentsContract.buildDocumentUriUsingTree(tree, id);
                 String key = digest(uri + ":" + modified + ":" + rows.getLong(3));
                 images.add(new Screenshot(uri, key, takenAt));
@@ -177,23 +181,26 @@ public final class ScreenshotService extends Service {
         }
         handled.retainAll(present);
         if (!active) {
-            handled.addAll(present);
             if (!stopping) {
                 active = true;
                 notifyChanged();
             }
-            return false;
         }
 
         boolean retry = false;
         images.sort(Comparator.comparingLong(Screenshot::takenAt));
         for (Screenshot image : images) {
             if (stopping) return false;
-            if (recognize(image) || failures.merge(image.imageKey(), 1, Integer::sum) >= 3) {
+            Ledger ledger = Ledger.get(this);
+            if (ledger.hasProcessed(image.imageKey()) || recognize(image)) {
+                ledger.markProcessed(image.imageKey());
                 handled.add(DocumentsContract.getDocumentId(image.uri()));
                 failures.remove(image.imageKey());
-            } else {
+            } else if (failures.merge(image.imageKey(), 1, Integer::sum) < 3) {
                 retry = true;
+            } else {
+                handled.add(DocumentsContract.getDocumentId(image.uri()));
+                failures.remove(image.imageKey());
             }
         }
         failures.keySet().retainAll(images.stream().map(Screenshot::imageKey).collect(Collectors.toSet()));

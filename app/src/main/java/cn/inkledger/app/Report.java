@@ -3,7 +3,6 @@ package cn.inkledger.app;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
-import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,7 +18,7 @@ final class Report {
     Report(YearMonth month, List<Expense> expenses) {
         this.expenses = expenses;
         days = new long[month.lengthOfMonth()];
-        Map<Expense.Category, Long> sums = new EnumMap<>(Expense.Category.class);
+        Map<Expense.Category, Long> sums = new LinkedHashMap<>();
         long amount = 0;
         for (Expense expense : expenses) {
             LocalDate date = expense.date();

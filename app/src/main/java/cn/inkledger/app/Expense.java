@@ -40,25 +40,56 @@ final class Expense {
         return "¥" + format.format(java.math.BigDecimal.valueOf(cents, 2));
     }
 
-    enum Category {
-        FOOD("餐饮", 0xff547d66, "食"),
-        TRANSPORT("交通", 0xff6889a6, "行"),
-        SHOPPING("购物", 0xffbf885a, "购"),
-        DAILY("日用", 0xff879766, "用"),
-        ENTERTAINMENT("娱乐", 0xffaa7796, "乐"),
-        HEALTH("医疗", 0xffb96e66, "医"),
-        OTHER("其他", 0xff778383, "他"),
-        UNKNOWN("待分类", 0xff9e9786, "待");
+    static final class Category {
+        static final Category FOOD = new Category("FOOD", "餐饮", 0xff547d66, "食");
+        static final Category TRANSPORT = new Category("TRANSPORT", "交通", 0xff6889a6, "行");
+        static final Category SHOPPING = new Category("SHOPPING", "购物", 0xffbf885a, "购");
+        static final Category DAILY = new Category("DAILY", "日用", 0xff879766, "用");
+        static final Category ENTERTAINMENT = new Category("ENTERTAINMENT", "娱乐", 0xffaa7796, "乐");
+        static final Category HEALTH = new Category("HEALTH", "医疗", 0xffb96e66, "医");
+        static final Category OTHER = new Category("OTHER", "其他", 0xff778383, "他");
+        static final Category UNKNOWN = new Category("UNKNOWN", "待分类", 0xff9e9786, "待");
 
+        private static final Category[] BUILT_INS = {
+                FOOD, TRANSPORT, SHOPPING, DAILY, ENTERTAINMENT, HEALTH, OTHER, UNKNOWN
+        };
+        private static final int[] COLORS = {0xff6467bd, 0xff538b86, 0xffa86584, 0xffa87c49};
+        private static final String CUSTOM = "custom:";
+        private final String key;
         final String label;
         final int color;
         final String mark;
 
-        Category(String label, int color, String mark) {
+        private Category(String key, String label, int color, String mark) {
+            this.key = key;
             this.label = label;
             this.color = color;
             this.mark = mark;
         }
+
+        String name() { return key; }
+
+        static Category[] values() { return BUILT_INS.clone(); }
+
+        static Category valueOf(String key) {
+            for (Category category : BUILT_INS) if (category.key.equals(key)) return category;
+            if (key != null && key.startsWith(CUSTOM) && key.length() > CUSTOM.length()) {
+                return custom(key.substring(CUSTOM.length()));
+            }
+            return UNKNOWN;
+        }
+
+        static Category custom(String name) {
+            int color = COLORS[Math.floorMod(name.hashCode(), COLORS.length)];
+            return new Category(CUSTOM + name, name, color,
+                    name.substring(0, name.offsetByCodePoints(0, 1)));
+        }
+
+        @Override public boolean equals(Object other) {
+            return other instanceof Category category && key.equals(category.key);
+        }
+
+        @Override public int hashCode() { return key.hashCode(); }
 
         static Category guess(String merchant, String item) {
             String text = (merchant + " " + item).toLowerCase(Locale.ROOT);

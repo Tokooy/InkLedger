@@ -16,6 +16,26 @@ final class ScreenshotFolder {
 
     private ScreenshotFolder() {}
 
+    static boolean resumeEnabled(Context context) {
+        return context.getSharedPreferences("capture", Context.MODE_PRIVATE).getBoolean("resume", false);
+    }
+
+    static void setResumeEnabled(Context context, boolean enabled) {
+        context.getSharedPreferences("capture", Context.MODE_PRIVATE).edit()
+                .putBoolean("resume", enabled).apply();
+    }
+
+    static long scanSince(Context context, Uri folder) {
+        var preferences = context.getSharedPreferences("capture", Context.MODE_PRIVATE);
+        String key = "scan_since:" + folder;
+        long since = preferences.getLong(key, 0);
+        if (since == 0) {
+            since = System.currentTimeMillis() / 1000 * 1000;
+            preferences.edit().putLong(key, since).apply();
+        }
+        return since;
+    }
+
     static Uri selected(Context context) {
         String saved = context.getSharedPreferences("capture", Context.MODE_PRIVATE).getString(KEY, null);
         if (saved == null) return null;

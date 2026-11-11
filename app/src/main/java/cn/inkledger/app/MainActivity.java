@@ -55,7 +55,7 @@ public final class MainActivity extends Activity {
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm", Locale.CHINA);
 
     private enum Page {
-        CATEGORY("分类"), DAYS("每日"), DETAILS("明细");
+        CATEGORY("分类"), DAYS("每日"), DETAILS("明细"), SETTINGS("设置");
         final String label;
         Page(String label) { this.label = label; }
     }
@@ -128,6 +128,9 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams navSize = new LinearLayout.LayoutParams(MATCH, WRAP);
         navSize.setMargins(dp(20), 0, dp(20), dp(8));
         root.addView(nav, navSize);
+        getWindow().setDecorFitsSystemWindows(false);
+        getWindow().setNavigationBarContrastEnforced(false);
+        getWindow().setStatusBarContrastEnforced(false);
         setContentView(frame);
         WindowInsetsController bars = getWindow().getInsetsController();
         if (bars != null) {
@@ -142,6 +145,10 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (!starting && !ScreenshotService.isActive()
+                && ScreenshotFolder.resumeEnabled(this) && ScreenshotFolder.selected(this) != null) {
+            startMonitor();
+        }
         load(false);
     }
 
@@ -190,9 +197,11 @@ public final class MainActivity extends Activity {
         int scrollY = resetScroll ? 0 : scroll.getScrollY();
         content.removeAllViews();
         renderHeader();
-        renderMonthSelector();
+        if (page != Page.SETTINGS) renderMonthSelector();
 
-        if (loading) {
+        if (page == Page.SETTINGS) {
+            renderSettings();
+        } else if (loading) {
             LinearLayout wait = card();
             wait.addView(label("正在读取账本", 15, MUTED, false));
             addCard(wait);
@@ -306,8 +315,7 @@ public final class MainActivity extends Activity {
                 line.addView(label(Expense.money(cents) + "  ·  " + percent, 13, MUTED, true));
                 makeClickable(line, WHITE, 15, () -> {
                     filter = category;
-                    page = Page.DETAILS;
-                    render(true);
+                    switchPage(Page.DETAILS);
                 });
                 box.addView(line);
             }
@@ -392,7 +400,7 @@ public final class MainActivity extends Activity {
         boolean any = false;
         for (Map.Entry<LocalDate, List<Expense>> entry : report.byDate.entrySet()) {
             List<Expense> rows = entry.getValue().stream()
-                    .filter(expense -> filter == null || expense.category() == filter)
+                    .filter(expense -> filter == null || expense.category().equals(filter))
                     .collect(java.util.stream.Collectors.toList());
             if (rows.isEmpty()) continue;
             any = true;
@@ -447,10 +455,11 @@ public final class MainActivity extends Activity {
         for (Page tab : Page.values()) {
             boolean selected = page == tab;
             TextView item = button(tab.label, selected ? BLUE : MUTED, selected ? TINT : 0xfffafbff, () -> {
-                page = tab;
+                if (page == tab && filter == null) return;
                 filter = null;
-                render(true);
+                switchPage(tab);
             });
+            item.setPadding(dp(4), dp(4), dp(4), dp(4));
             item.setSelected(selected);
             LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, dp(45), 1);
             size.setMargins(dp(2), 0, dp(2), 0);
@@ -469,6 +478,7 @@ public final class MainActivity extends Activity {
         addSheetButton(sheet, active ? "停止识别" : selected ? "开启识别" : "选择截图目录", WHITE, BLUE, () -> {
             closeSheet();
             if (active) {
+                ScreenshotFolder.setResumeEnabled(this, false);
                 stopService(new Intent(this, ScreenshotService.class));
             } else if (!selected) {
                 chooseScreenshotFolder();
@@ -524,6 +534,7 @@ public final class MainActivity extends Activity {
 
     private void startMonitor() {
         try {
+            ScreenshotFolder.setResumeEnabled(this, true);
             if (startForegroundService(new Intent(this, ScreenshotService.class)) == null) {
                 Toast.makeText(this, "启动截图识别失败", Toast.LENGTH_SHORT).show();
                 return;
@@ -543,38 +554,126 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void expenseSheet(Expense expense) {
-        LinearLayout sheet = sheet(Expense.money(expense.cents()));
-        addSheetText(sheet, expense.merchant() + " · " + expense.source() + " · " + expense.date().format(DATE_FORMAT));
-        TextView prompt = label("修改分类", 15, INK, true);
-        marginTop(prompt, 18);
-        sheet.addView(prompt);
-        Expense.Category[] options = Expense.Category.values();
-        for (int start = 0; start < options.length; start += 4) {
-            LinearLayout choices = row();
-            for (int index = start; index < Math.min(start + 4, options.length); index++) {
-                Expense.Category option = options[index];
-                boolean selected = option == expense.category();
-                TextView chip = button(option.label, selected ? BLUE : INK, selected ? TINT : BG, () -> {
-                    closeSheet();
-                    mutate(() -> Ledger.get(this).recategorize(expense.id(), option));
-                });
-                chip.setPadding(dp(3), 0, dp(3), 0);
-                chip.setSelected(selected);
-                LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, WRAP, 1);
-                size.setMargins(dp(2), dp(6), dp(2), 0);
-                choices.addView(chip, size);
-            }
-            sheet.addView(choices);
+    private void switchPage(Page next) {
+        int direction = next.ordinal() >= page.ordinal() ? 1 : -1;
+        page = next;
+        render(true);
+        animateIn(content, dp(22) * direction, 0);
+    }
+
+    private void animateIn(View view, float x, float y) {
+        view.animate().cancel();
+        view.setTranslationX(x);
+        view.setTranslationY(y);
+        view.setAlpha(.45f);
+        view.animate().translationX(0).translationY(0).alpha(1f)
+                .setDuration(290).setInterpolator(new android.view.animation.PathInterpolator(.2f, .85f, .2f, 1f)).start();
+    }
+
+    private java.util.List<Expense.Category> categories() {
+        var options = new java.util.ArrayList<>(java.util.Arrays.asList(Expense.Category.values()));
+        getSharedPreferences("categories", MODE_PRIVATE)
+                .getStringSet("names", java.util.Set.of()).stream().sorted()
+                .map(Expense.Category::custom).forEach(options::add);
+        return options;
+    }
+
+    private void renderSettings() {
+        LinearLayout categoryCard = card();
+        categoryCard.addView(label("消费分类", 21, INK, true));
+        addSheetText(categoryCard, "新增分类后，可以在消费详情中为交易选择它。");
+        for (Expense.Category category : categories()) {
+            TextView item = label(category.label, 16, INK, false);
+            item.setPadding(0, dp(10), 0, dp(3));
+            categoryCard.addView(item);
         }
-        addSheetButton(sheet, "删除这笔记录", 0xffa63243, 0xffffedf0, () -> {
-            LinearLayout confirm = sheet("删除这笔记录？");
+        addSheetButton(categoryCard, "添加分类", WHITE, BLUE, this::addCategoryPage);
+        addCard(categoryCard);
+    }
+
+    private LinearLayout fullPage(String title, boolean animate) {
+        closeSheet();
+        overlay = new FrameLayout(this);
+        overlay.setBackgroundColor(BG);
+        overlay.setClickable(true);
+        ScrollView body = new ScrollView(this);
+        body.setFillViewport(true);
+        body.setVerticalScrollBarEnabled(false);
+        LinearLayout panel = column();
+        panel.setPadding(dp(20), dp(12), dp(20), dp(24));
+        TextView back = button("‹  返回", BLUE, TINT, this::closeSheet);
+        panel.addView(back, new LinearLayout.LayoutParams(WRAP, WRAP));
+        TextView heading = label(title, 30, INK, true);
+        marginTop(heading, 16);
+        panel.addView(heading);
+        body.addView(panel, new ScrollView.LayoutParams(MATCH, WRAP));
+        overlay.addView(body, new FrameLayout.LayoutParams(MATCH, MATCH));
+        root.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        frame.addView(overlay, new FrameLayout.LayoutParams(MATCH, MATCH));
+        overlay.setAccessibilityPaneTitle(title);
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, dismiss);
+        if (animate) animateIn(body, dp(30), 0);
+        return panel;
+    }
+
+    private void addCategoryPage() {
+        LinearLayout panel = fullPage("添加分类", true);
+        LinearLayout form = card();
+        marginTop(form, 18);
+        panel.addView(form);
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setSingleLine(true);
+        input.setHint("分类名称");
+        input.setTextColor(INK);
+        input.setBackground(shape(BG, 15));
+        input.setPadding(dp(14), dp(14), dp(14), dp(14));
+        input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(16)});
+        form.addView(input, new LinearLayout.LayoutParams(MATCH, WRAP));
+        addSheetButton(form, "保存分类", WHITE, BLUE, () -> {
+            String name = input.getText().toString().strip();
+            if (name.isEmpty() || categories().stream().anyMatch(category -> category.label.equalsIgnoreCase(name))) {
+                input.setError(name.isEmpty() ? "请输入分类名称" : "已有同名分类");
+                return;
+            }
+            var preferences = getSharedPreferences("categories", MODE_PRIVATE);
+            var names = new java.util.HashSet<>(preferences.getStringSet("names", java.util.Set.of()));
+            names.add(name);
+            preferences.edit().putStringSet("names", names).apply();
+            getSystemService(android.view.inputmethod.InputMethodManager.class)
+                    .hideSoftInputFromWindow(input.getWindowToken(), 0);
+            closeSheet();
+            render(false);
+        });
+    }
+
+    private void expenseSheet(Expense expense) {
+        LinearLayout panel = fullPage("消费详情", true);
+        LinearLayout summary = card();
+        marginTop(summary, 18);
+        summary.addView(label(Expense.money(expense.cents()), 36, INK, true));
+        addSheetText(summary, expense.merchant() + " · " + expense.source() + " · " + expense.date().format(DATE_FORMAT));
+        panel.addView(summary);
+
+        LinearLayout choices = card();
+        marginTop(choices, 12);
+        choices.addView(label("修改分类", 20, INK, true));
+        for (Expense.Category option : categories()) {
+            boolean selected = option.equals(expense.category());
+            addSheetButton(choices, selected ? option.label + "  ✓" : option.label,
+                    selected ? BLUE : INK, selected ? TINT : BG, () -> {
+                        closeSheet();
+                        mutate(() -> Ledger.get(this).recategorize(expense.id(), option));
+                    });
+        }
+        panel.addView(choices);
+        addSheetButton(panel, "删除这笔记录", 0xffa63243, 0xffffedf0, () -> {
+            LinearLayout confirm = fullPage("删除这笔记录？", false);
             addSheetText(confirm, expense.merchant() + " · " + Expense.money(expense.cents()));
             addSheetButton(confirm, "删除", WHITE, 0xffa63243, () -> {
                 closeSheet();
                 mutate(() -> Ledger.get(this).delete(expense.id()));
             });
-            addSheetButton(confirm, "取消", MUTED, BG, this::closeSheet);
+            addSheetButton(confirm, "取消", MUTED, BG, () -> expenseSheet(expense));
         });
     }
 
@@ -692,7 +791,7 @@ public final class MainActivity extends Activity {
         TextView label = label(text, 14, foreground, true);
         label.setGravity(Gravity.CENTER);
         label.setMinHeight(dp(44));
-        label.setPadding(dp(12), dp(4), dp(12), dp(4));
+        label.setPadding(dp(12), dp(7), dp(12), dp(7));
         makeClickable(label, background, 20, action);
         return label;
     }

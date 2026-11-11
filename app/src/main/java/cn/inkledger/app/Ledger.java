@@ -69,6 +69,19 @@ final class Ledger extends SQLiteOpenHelper {
         }
     }
 
+    boolean hasProcessed(String imageKey) {
+        try (Cursor cursor = getReadableDatabase().query("recognized", new String[]{"image_key"},
+                "image_key = ?", new String[]{imageKey}, null, null, null)) {
+            return cursor.moveToFirst();
+        }
+    }
+
+    void markProcessed(String imageKey) {
+        ContentValues values = new ContentValues();
+        values.put("image_key", imageKey);
+        getWritableDatabase().insertWithOnConflict("recognized", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+    }
+
     List<Expense> month(YearMonth month) {
         ZoneId zone = ZoneId.systemDefault();
         long start = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli();
