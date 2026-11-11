@@ -48,7 +48,7 @@ public final class MainActivity extends Activity {
     private static final int TINT = 0xffeaf0ff;
     private static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT;
     private static final int WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
-    private static final int IMAGES = 101;
+    private static final int SCREENSHOT_FOLDER = 101;
     private static final int NOTIFICATIONS = 102;
     private static final DateTimeFormatter MONTH_FORMAT = DateTimeFormatter.ofPattern("yyyy 年 M 月", Locale.CHINA);
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("M 月 d 日 · EEEE", Locale.CHINA);
@@ -461,22 +461,51 @@ public final class MainActivity extends Activity {
     private void monitorSheet() {
         if (starting) return;
         boolean active = ScreenshotService.isActive();
+        boolean selected = ScreenshotFolder.selected(this) != null;
         LinearLayout sheet = sheet(active ? "截图识别已开启" : "自动识别付款截图");
         addSheetText(sheet, active
                 ? "新保存的截图会在本机识别。你也可以通过常驻通知随时停止。"
-                : "授权读取照片后，墨账只分析开启服务后新保存的截图。识别到已完成的消费才写入账本。");
-        addSheetButton(sheet, active ? "停止识别" : "授权并开启", WHITE, BLUE, () -> {
+                : "请选择「截屏录屏」对应的截图目录。墨账只识别目录中新保存的图片，并将已完成的消费写入账本。");
+        addSheetButton(sheet, active ? "停止识别" : selected ? "开启识别" : "选择截图目录", WHITE, BLUE, () -> {
             closeSheet();
             if (active) {
                 stopService(new Intent(this, ScreenshotService.class));
-            } else if (!ScreenshotService.hasImageAccess(this)) {
-                requestPermissions(new String[]{Manifest.permission.READ_MEDIA_IMAGES,
-                        Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED}, IMAGES);
+            } else if (!selected) {
+                chooseScreenshotFolder();
             } else {
                 requestNotificationsOrStart();
             }
         });
+        if (!active && selected) {
+            addSheetButton(sheet, "更换截图目录", BLUE, TINT, () -> {
+                closeSheet();
+                chooseScreenshotFolder();
+            });
+        }
         addSheetButton(sheet, "关闭", MUTED, BG, this::closeSheet);
+    }
+
+    private void chooseScreenshotFolder() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(picker, SCREENSHOT_FOLDER);
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != SCREENSHOT_FOLDER || result != RESULT_OK) return;
+        if (data != null && ScreenshotFolder.select(this, data.getData())) {
+            requestNotificationsOrStart();
+        } else {
+            LinearLayout sheet = sheet("请选择截图目录");
+            addSheetText(sheet, "请在手机存储里打开「截屏录屏」或 Screenshots，再点「使用此文件夹」。");
+            addSheetButton(sheet, "重新选择", WHITE, BLUE, () -> {
+                closeSheet();
+                chooseScreenshotFolder();
+            });
+            addSheetButton(sheet, "关闭", MUTED, BG, this::closeSheet);
+        }
     }
 
     private void requestNotificationsOrStart() {
@@ -490,22 +519,7 @@ public final class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
-        if (request == IMAGES) {
-            if (ScreenshotService.hasImageAccess(this)) {
-                requestNotificationsOrStart();
-            } else {
-                LinearLayout sheet = sheet("需要读取新截图");
-                addSheetText(sheet, "系统只授权指定照片时，墨账无法读取之后保存的截图。可以在应用权限中允许访问所有照片，再回到墨账开启识别。");
-                addSheetButton(sheet, "打开应用设置", WHITE, BLUE, () -> {
-                    closeSheet();
-                    startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            android.net.Uri.fromParts("package", getPackageName(), null)));
-                });
-                addSheetButton(sheet, "关闭", MUTED, BG, this::closeSheet);
-            }
-        } else if (request == NOTIFICATIONS) {
-            startMonitor();
-        }
+        if (request == NOTIFICATIONS) startMonitor();
     }
 
     private void startMonitor() {
