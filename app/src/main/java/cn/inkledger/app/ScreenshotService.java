@@ -95,7 +95,11 @@ public final class ScreenshotService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (worker != null) return START_STICKY;
+        if (worker != null) {
+            worker.removeCallbacks(scan);
+            worker.post(scan);
+            return START_STICKY;
+        }
         tree = ScreenshotFolder.selected(this);
         if (tree == null || !ScreenshotFolder.resumeEnabled(this)) {
             stopSelf();
@@ -211,15 +215,31 @@ public final class ScreenshotService extends Service {
         try {
             Text text = Tasks.await(recognizer.process(InputImage.fromFilePath(this, screenshot.uri())),
                     12, TimeUnit.SECONDS);
-            if (stopping) return true;
-            PaymentParser.Result result = PaymentParser.parse(readRows(text), screenshot.takenAt());
-            if (result == null) return true;
-            String orderKey = result.order().isEmpty() ? null : digest(result.order());
-            if (Ledger.get(this).insert(result, screenshot.imageKey(), orderKey)) {
+            if (stopping) return false;
+            List<String> rows = readRows(text);
+            PaymentParser.Result single = PaymentParser.parse(rows, screenshot.takenAt());
+            List<PaymentParser.Result> payments = single != null ? List.of(single)
+                    : BillListParser.parse(rows, screenshot.takenAt());
+            PaymentParser.Result newest = null;
+            Ledger ledger = Ledger.get(this);
+            Map<String, Integer> repeatedRows = new HashMap<>();
+            for (PaymentParser.Result result : payments) {
+                if (stopping) return false;
+                String orderKey = result.order().isEmpty() ? null : digest(result.order());
+                String key = screenshot.imageKey();
+                if (single == null) {
+                    String row = result.merchant().replaceAll("\\s+", "") + ":" + result.cents() + ":" + result.paidAt();
+                    int occurrence = repeatedRows.merge(row, 1, Integer::sum);
+                    key = digest("bill-list:" + row + ":" + occurrence);
+                }
+                if (ledger.insert(result, key, orderKey)
+                        && (newest == null || result.paidAt() > newest.paidAt())) newest = result;
+            }
+            if (newest != null) {
                 notifyChanged();
                 if (!stopping) {
                     try {
-                        Notices.expense(this, result);
+                        Notices.expense(this, newest);
                     } catch (RuntimeException failure) {
                         Log.w(TAG, "Unable to show expense notification");
                     }

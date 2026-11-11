@@ -145,9 +145,9 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (!starting && !ScreenshotService.isActive()
-                && ScreenshotFolder.resumeEnabled(this) && ScreenshotFolder.selected(this) != null) {
-            startMonitor();
+        if (!starting && ScreenshotFolder.resumeEnabled(this) && ScreenshotFolder.selected(this) != null) {
+            if (ScreenshotService.isActive()) startService(new Intent(this, ScreenshotService.class));
+            else startMonitor();
         }
         load(false);
     }
